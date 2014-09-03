@@ -2,8 +2,11 @@
 #include "Util.h"
 #include <XBee.h>
 
+#define CTS_TIMEOUT_MS       ( 300 )
+#define RESPONSE_TIMEOUT_MS  ( 2000 )
+
 XbeeEndDevice::XbeeEndDevice( )
-	: XbeeDev( ), CtsPin( -1 ), RtsPin( -1 ), ResetPin( -1 ), AssociatedFlag( false ), CurrentApiId( -1 )
+	: XbeeDev( ), CtsPin( -1 ), RtsPin( -1 ), ResetPin( -1 ), AssociatedFlag( false ), MessageReceivedFlag( false ), CurrentApiId( -1 ), CurrentFrameId( -1 )
 {
 }
 
@@ -13,7 +16,9 @@ void XbeeEndDevice::begin( Stream& stream, int cts, int rts, int reset )
 	RtsPin = rts;
 	ResetPin = reset;
 	AssociatedFlag = false;
+	MessageReceivedFlag = false;
 	CurrentApiId = -1;
+	CurrentFrameId = -1;
 
 	// Setup hardware
 	if( CtsPin != -1 )
@@ -27,7 +32,6 @@ void XbeeEndDevice::begin( Stream& stream, int cts, int rts, int reset )
 		
 	// Setup XBee
 	XbeeDev.setSerial( stream );		
-	assertRts( );
 	hardReset( );
 
 	// Enable API mode with character escaping.
@@ -45,13 +49,22 @@ void XbeeEndDevice::join( uint64_t pan_id, uint16_t channel )
 	configure( "SC", channel, sizeof( channel ), true );
 }
 
-bool XbeeEndDevice::joined( void ) const
+bool XbeeEndDevice::joined( void )
 {
+	if( !AssociatedFlag )
+	{
+		uint8_t ai = 0;
+		int error = getATCommand( "AI", &ai, sizeof( uint8_t ) );
+		if( error > 0 && !ai )
+			AssociatedFlag = true;
+	}
 	return AssociatedFlag;
 }
 
 void XbeeEndDevice::tick( void )
 {
+	assertRts( );
+
 	XbeeDev.readPacket();
 	
 	if( XbeeDev.getResponse( ).isAvailable( ) )
@@ -60,10 +73,12 @@ void XbeeEndDevice::tick( void )
 		if( CurrentApiId == ZB_RX_RESPONSE )
 		{
 			XbeeDev.getResponse( ).getZBRxResponse( XbeeRxIndication );
+			MessageReceivedFlag = true;
 		}
 		else if( CurrentApiId == AT_COMMAND_RESPONSE )
 		{
 			XbeeDev.getResponse( ).getAtCommandResponse( XbeeAtCommandResp );	
+			CurrentFrameId = XbeeAtCommandResp.getFrameId( );
 		}
 		else if( CurrentApiId == MODEM_STATUS_RESPONSE ) 
 		{
@@ -76,28 +91,28 @@ void XbeeEndDevice::tick( void )
 			{
 				AssociatedFlag = false;
 			}
-			else if( XbeeModemStatus.getStatus( ) == COORDINATOR_STARTED )
-			{
-				AssociatedFlag = true;
-			}
 		}
 		else if( CurrentApiId == ZB_TX_STATUS_RESPONSE )
 		{
 			XbeeDev.getResponse( ).getZBTxStatusResponse( XbeeTxResponse );		
+			CurrentFrameId = XbeeTxResponse.getFrameId( );
 		}		
 	}
+	
+	deassertRts( );
 }
 
 int XbeeEndDevice::send( const uint8_t* buffer, int buffer_size )
 {
-	int bytes  = 0;
-	
 	if( !buffer )
 		return 0;
-	
-	if( !waitForCts( 200 ) )
+
+	if( !waitForCts( CTS_TIMEOUT_MS ) )
 		return XBEE_CTS_TIMEOUT;
-	
+
+	int bytes  = 0;		
+	int frameId = XbeeDev.getNextFrameId( );
+	XbeeTxRequest.setFrameId( frameId );
 	XbeeTxRequest.setPayload( ( uint8_t* ) buffer );
 	XbeeTxRequest.setPayloadLength( buffer_size );
 	XBeeAddress64 coordinator( 0, 0 );
@@ -105,7 +120,7 @@ int XbeeEndDevice::send( const uint8_t* buffer, int buffer_size )
 
 	XbeeDev.send( XbeeTxRequest );
 
-	if( waitForMessage( ZB_TX_STATUS_RESPONSE, 2000 )  )
+	if( waitForResponse( ZB_TX_STATUS_RESPONSE, frameId, RESPONSE_TIMEOUT_MS )  )
 	{
 		if( XbeeTxResponse.getDeliveryStatus( ) == SUCCESS )
 			return buffer_size;
@@ -118,9 +133,9 @@ int XbeeEndDevice::send( const uint8_t* buffer, int buffer_size )
 
 int XbeeEndDevice::available( void )
 {
-	if( CurrentApiId == ZB_RX_RESPONSE )
+	if( MessageReceivedFlag )
 	{
-		CurrentApiId = -1;
+		MessageReceivedFlag = false;
 		return XbeeRxIndication.getDataLength( );
 	}
         
@@ -162,19 +177,24 @@ int XbeeEndDevice::configure( const char* command, uint64_t value, int valueLen,
 
 int XbeeEndDevice::setATCommand( const char* command, const void* value, int value_len )
 {
+	if( !waitForCts( CTS_TIMEOUT_MS ) )
+		return XBEE_CTS_TIMEOUT;
+		
+	int frameId = XbeeDev.getNextFrameId( );
+	XbeeAtCommandReq.setFrameId( frameId );
 	XbeeAtCommandReq.setCommand( ( uint8_t* )command );
 	XbeeAtCommandReq.clearCommandValue( );
         
 	if( value )
 		XbeeAtCommandReq.setCommandValue( ( uint8_t* )value );
 
-	if( value_len )
+	if( value && value_len )
 		XbeeAtCommandReq.setCommandValueLength( ( uint8_t )value_len );
 	
 	// Transmit command.
 	XbeeDev.send( XbeeAtCommandReq );
 
-	if( waitForMessage( AT_COMMAND_RESPONSE, 2000 ) )
+	if( waitForResponse( AT_COMMAND_RESPONSE, frameId, RESPONSE_TIMEOUT_MS ) )
 	{
 		if( XbeeAtCommandResp.isOk( ) )
 			return XBEE_NO_ERROR;
@@ -189,13 +209,18 @@ int XbeeEndDevice::setATCommand( const char* command, const void* value, int val
 
 int XbeeEndDevice::getATCommand( const char* command, void* value, int value_len )
 {	
+	if( !waitForCts( CTS_TIMEOUT_MS ) )
+		return XBEE_CTS_TIMEOUT;
+		
+	int frameId = XbeeDev.getNextFrameId( );
+	XbeeAtCommandReq.setFrameId( frameId );
 	XbeeAtCommandReq.setCommand( ( uint8_t* )command );
 	XbeeAtCommandReq.clearCommandValue( );
 
 	// Transmit command.
 	XbeeDev.send( XbeeAtCommandReq );
 
-	if( waitForMessage( AT_COMMAND_RESPONSE, 2000 ) )
+	if( waitForResponse( AT_COMMAND_RESPONSE, frameId, RESPONSE_TIMEOUT_MS ) )
 	{
 		if( XbeeAtCommandResp.isOk( ) )
 		{
@@ -264,7 +289,11 @@ void XbeeEndDevice::hardReset( void )
 void XbeeEndDevice::assertRts( void )
 {
 	if( RtsPin != -1 )
-		digitalWrite( RtsPin, LOW );
+	{
+		digitalWrite( RtsPin, LOW );	
+		// allow UART buffer to receive some data.
+		delay( 100 );
+	}
 }
 
 void XbeeEndDevice::deassertRts( void )
@@ -292,14 +321,16 @@ bool XbeeEndDevice::waitForCts( int timeout )
 	return true;
 }
 
-bool XbeeEndDevice::waitForMessage( int api_id, int timeout )
+bool XbeeEndDevice::waitForResponse( int api_id, int frame_id, int timeout )
 {
 	long start = millis( );
 	
-	// reset last received message.
+	// reset last received response.
 	CurrentApiId = -1;
-	
-	while( CurrentApiId != api_id )
+	CurrentFrameId = -1;
+
+	while( CurrentApiId != api_id &&
+		   CurrentFrameId != frame_id )
 	{
 		tick( );
 		
