@@ -43,10 +43,14 @@ void XbeeEndDevice::begin( Stream& stream, int cts, int rts, int reset )
 	configure( "D6", ( RtsPin < 0 ? 0 : 1 ), 1 );
 }
 
-void XbeeEndDevice::join( uint64_t pan_id, uint16_t channel )
+void XbeeEndDevice::join( uint64_t pan_id, uint16_t channel, uint16_t securityKey )
 {
-	configure( "ID", pan_id, sizeof( pan_id ), true );
-	configure( "SC", channel, sizeof( channel ), true );
+	AssociatedFlag = false;
+	configure( "ID", pan_id, sizeof( pan_id ) );
+	configure( "SC", channel, sizeof( channel ) );	
+	configure( "EE", ( securityKey == NO_SECURITY ?  0 : 1 ) , 1 );
+	configure( "NK", 0, 1 );
+	configure( "KY", ( securityKey == NO_SECURITY ?  0 : securityKey ), sizeof( securityKey ) );
 }
 
 bool XbeeEndDevice::joined( void )
@@ -265,6 +269,14 @@ uint16_t XbeeEndDevice::getOperatingPanId( void )
 	uint16_t panID = 0;
 	getATCommand( "OI", &panID, sizeof( panID ) );
 	return networkToHostShort( panID );
+}
+
+uint8_t XbeeEndDevice::getRSSI( void )
+{
+	// in -dBm, range for Xbee: 0x1A - 0x5C (pg.134)
+	uint8_t rssi = 0;
+	getATCommand( "DB", &rssi, sizeof( rssi ) );
+	return rssi;
 }
 	
 void XbeeEndDevice::hardReset( void )

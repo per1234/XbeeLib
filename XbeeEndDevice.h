@@ -6,7 +6,8 @@
 
 // Default values
 #define PAN_ID_ANY			( 0 )
-#define ALL_CHANNELS 			( 0xFFFF )
+#define ALL_CHANNELS 		( 0xFFFF )
+#define NO_SECURITY			( 0 )
 
 // Error codes
 #define XBEE_NO_ERROR  			( 0 )
@@ -23,11 +24,12 @@ public:
 	void begin( Stream& stream, int cts = -1, int rts = -1, int reset = -1 );
 	void tick( void );
 
-	void join( uint64_t pan_id = PAN_ID_ANY, uint16_t channel = ALL_CHANNELS );
+	void join( uint64_t pan_id = PAN_ID_ANY, uint16_t channel = ALL_CHANNELS, securityKey = NO_SECURITY );
 	bool joined( void );	
 	uint64_t getAddress64( void );
 	uint16_t getAddress16( void );
 	uint16_t getOperatingPanId( void );
+	uint8_t getRSSI( void );
 	
 	int send( const uint8_t* buffer, int buffer_size );
 	int available( void );
