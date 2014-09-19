@@ -434,15 +434,6 @@ XbeeNodeID::XbeeNodeID( uint8_t* buffer, int len )
 
 void XbeeNodeID::parse( uint8_t* buffer, int len )
 {
-Serial1.print("NODEID len=");
-Serial1.println(len);
-for( int i=0; i<len; i++)
-{
-  Serial1.print( buffer[i], HEX );
-  Serial1.print( ' ' );
-}
-Serial1.println();
-
 	if( len < 30 )
 		return;
 
@@ -450,26 +441,12 @@ Serial1.println();
 	swapBytes( &Address16, &buffer[11], sizeof( Address16 ) );
 	// Source 64-bit address;
 	swapBytes( &Address64, &buffer[13], sizeof( Address64 ) );
-Serial1.print("16=");
-Serial1.print( Address16, HEX );
-Serial1.print(",64=");
-Serial1.print( ( uint32_t )( Address64 >> 32 ), HEX );
-Serial1.print( ( uint32_t )Address64, HEX );
-
-	//int str_len = len - 33 - 1;
+	
 	int str_len = strlen( ( const char* )&buffer[21] );
 	if( str_len <= 20 )
 		strcpy( ID, ( const char* )&buffer[21] );
-
-Serial1.print(",str_len=");
-Serial1.print(str_len);
-Serial1.print(",id=");
-Serial1.print(ID);
-
+		
 	DeviceType = buffer[21+str_len+1+2];
-Serial1.print(",t=");
-Serial1.println(DeviceType);
-
 }
 
 void XbeeNodeID::reset( void )
